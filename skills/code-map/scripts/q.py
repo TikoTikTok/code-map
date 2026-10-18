@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""q.py - structural code search: an ast-grep pattern (or rule file) over the repo, one line per match.
+
+    python q.py <repo> '<pattern>' [--lang LANG] [--count] [--selector KIND] [--json]
+    python q.py <repo> --rule rules.yml [--lang LANG] [--count]
+
+Patterns are ast-grep patterns: `$A` matches one node, `$$$ARGS` matches many
+(`fetch($URL, $$$)`, `await $X.json()`, `def $F(self, $$$): $$$`). Go, C, C++
+and Rust expression patterns are wrapped in a function body automatically;
+pass --selector KIND to choose which node kind of the wrapped pattern to match.
+--count prints per-file totals only. Without ast-grep-py (or the `sg` CLI) the
+pattern degrades to a regex and says so on stderr.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from codemap_core import INSTALL_HINT, add_common_args, open_repo, setup_stdout  # noqa: E402
+
+AG_LANGS = {"python", "typescript", "tsx", "javascript", "php", "go", "rust", "c", "cpp", "bash"}
+LANG_ALIASES = {"py": "python", "ts": "typescript", "js": "javascript", "sh": "bash", "rs": "rust",
+                "c++": "cpp", "cc": "cpp", "golang": "go"}
+# languages whose grammars reject a bare expression at top level, with a wrapper and selectors to try
+WRAP = {
+    "go": ("package p\nfunc _w() {\n", "\n}\n"),
+    "c": ("void _w(void) {\n", "\n}\n"),
+    "cpp": ("void _w() {\n", "\n}\n"),
+    "rust": ("fn _w() {\n", "\n}\n"),
+}
+SELECTORS = ["call_expression", "macro_invocation", "assignment_expression", "short_var_declaration",
+             "declaration", "let_declaration", "return_statement", "if_statement", "for_statement",
+             "binary_expression", "field_expression", "selector_expression", "expression_statement"]
+
+
+def trim(text: str, limit: int = 120) -> str:
+    first = text.strip().split("\n", 1)[0]
+    first = re.sub(r"\s+", " ", first)
+    if len(text.strip().split("\n")) > 1:
+        first += " ..."
+    return first if len(first) <= limit else first[: limit - 3] + "..."
+
+
+def load_rule(path: str) -> dict:
+    raw = Path(path).read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore
+        doc = yaml.safe_load(raw)
+    except ImportError:
+        doc = json.loads(raw)
+    if not isinstance(doc, dict):
+        raise SystemExit("error: rule file must be a mapping with a `rule` key")
+    cfg = {k: v for k, v in doc.items() if k in ("rule", "constraints", "utils", "transform")}
+    if "rule" not in cfg:
+        cfg = {"rule": doc}
+    return cfg, doc.get("language")
+
+
+def _has_error(node) -> bool:
+    if node.kind() == "ERROR":
+        return True
+    return any(_has_error(c) for c in node.children())
+
+
+def pattern_config(ag, lang: str, pattern: str, selector: str | None):
+    """A rule config for `pattern` in `lang`.
+
+    Go, C, C++ and Rust grammars reject a bare expression at top level, so the pattern is wrapped in
+    a function body (with a statement terminator first, which C needs) and the first selector that
+    builds a matcher is used. A pattern that is a whole top-level construct (`func $F($$$) { $$$ }`)
+    fails every selector and falls through to the plain pattern."""
+    plain = {"rule": {"pattern": pattern}}
+    if lang not in WRAP:
+        return plain
+    if not selector:
+        try:
+            if not _has_error(ag.SgRoot(pattern, lang).root()):
+                return plain  # a whole top-level construct: the grammar accepts it as is
+        except Exception:
+            pass
+    pre, suf = WRAP[lang]
+    bodies = [pattern + ";", pattern] if not pattern.rstrip().endswith((";", "}")) else [pattern]
+    for sel in ([selector] if selector else SELECTORS):  # most specific selector first, statement last
+        for body in bodies:
+            context = pre + body + suf
+            cfg = {"rule": {"pattern": {"context": context, "selector": sel}}}
+            try:
+                ag.SgRoot(context, lang).root().find_all(cfg)  # raises when the selector finds no node
+                return cfg
+            except Exception:
+                continue
+    return plain
+
+
+def run_ag(repo, files, lang_of, cfg_for_lang, count: bool):
+    import ast_grep_py as ag
+    results = []
+    cache: dict[str, dict] = {}
+    for rel in files:
+        lang = lang_of[rel]
+        if lang not in AG_LANGS:
+            continue
+        text = repo.read_text(rel)
+        if text is None:
+            continue
+        cfg = cache.get(lang)
+        if cfg is None:
+            cfg = cache[lang] = cfg_for_lang(ag, lang)
+        try:
+            matches = ag.SgRoot(text, lang).root().find_all(cfg)
+        except Exception as e:  # pattern invalid for this grammar
+            print(f"q: skipping {lang} ({str(e).splitlines()[0]})", file=sys.stderr)
+            cache[lang] = {"rule": {"kind": "__never__"}}
+            continue
+        for m in matches:
+            r = m.range()
+            results.append((rel, r.start.line + 1, r.start.column + 1, r.end.line + 1, m.text()))
+    return results
+
+
+def run_sg_cli(sg: str, repo, pattern: str | None, rule: str | None, lang: str | None):
+    cmd = [sg]
+    if rule:
+        cmd += ["scan", "--rule", rule, "--json=compact"]
+    else:
+        cmd += ["run", "--pattern", pattern, "--json=compact"]
+        if lang:
+            cmd += ["--lang", lang]
+    cmd.append(str(repo.root))
+    out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    results = []
+    try:
+        items = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        print(out.stderr.strip(), file=sys.stderr)
+        return results
+    for it in items:
+        try:
+            rel = Path(it["file"]).resolve().relative_to(repo.root).as_posix()
+        except ValueError:
+            rel = it["file"].replace("\\", "/")
+        if rel not in repo.langs:
+            continue
+        rng = it["range"]
+        results.append((rel, rng["start"]["line"] + 1, rng["start"]["column"] + 1, rng["end"]["line"] + 1,
+                        it["text"]))
+    return results
+
+
+def pattern_to_regex(pattern: str) -> re.Pattern:
+    parts = re.split(r"(\$\$\$\w*|\$\w+)", pattern)
+    rx = ""
+    for part in parts:
+        if part.startswith("$$$"):
+            rx += r".*?"
+        elif part.startswith("$"):
+            rx += r"[^\s,;(){}]+?(?:\([^)]*\))?"
+        else:
+            rx += r"\s*".join(re.escape(tok) for tok in re.split(r"\s+", part) if tok)
+            if part.strip() != part and part.strip():
+                rx = rx
+    return re.compile(rx)
+
+
+def run_regex(repo, files, pattern: str):
+    rx = pattern_to_regex(pattern)
+    results = []
+    for rel in files:
+        text = repo.read_text(rel)
+        if text is None:
+            continue
+        for i, line in enumerate(text.split("\n"), 1):
+            m = rx.search(line)
+            if m:
+                results.append((rel, i, m.start() + 1, i, m.group(0)))
+    return results
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_common_args(ap)
+    ap.add_argument("pattern", nargs="?", help="ast-grep pattern (omit with --rule)")
+    ap.add_argument("--lang", help="only files of this language (python, typescript, tsx, javascript, php, go, rust, c, cpp, bash)")
+    ap.add_argument("--rule", help="ast-grep rule file (YAML, or JSON) instead of a pattern")
+    ap.add_argument("--count", action="store_true", help="per-file match counts only")
+    ap.add_argument("--selector", help="node kind to select from a wrapped Go/C/C++/Rust pattern")
+    args = ap.parse_args(argv)
+    setup_stdout()
+    if not args.pattern and not args.rule:
+        ap.error("a pattern or --rule is required")
+    repo = open_repo(args)
+    files = repo.walk()
+    lang = LANG_ALIASES.get((args.lang or "").lower(), (args.lang or "").lower()) or None
+    rule_cfg, rule_lang = (load_rule(args.rule) if args.rule else (None, None))
+    if rule_lang and not lang:
+        lang = LANG_ALIASES.get(str(rule_lang).lower(), str(rule_lang).lower())
+    if lang:
+        files = [f for f in files if repo.langs[f] == lang]
+
+    results = None
+    try:
+        import ast_grep_py as ag  # noqa: F401
+        have_ag = True
+    except ImportError:
+        have_ag = False
+    if have_ag:
+        if rule_cfg:
+            results = run_ag(repo, files, repo.langs, lambda _ag, _l: rule_cfg, args.count)
+        else:
+            results = run_ag(repo, files, repo.langs,
+                             lambda _ag, l: pattern_config(_ag, l, args.pattern, args.selector), args.count)
+    else:
+        sg = shutil.which("sg") or shutil.which("ast-grep")
+        if sg and (args.rule or args.pattern):
+            print(f"q: ast-grep-py not installed, using {sg}", file=sys.stderr)
+            results = run_sg_cli(sg, repo, args.pattern, args.rule, lang)
+        elif args.pattern:
+            print(f"q: ast-grep-py not installed, approximating the pattern with a regex ({INSTALL_HINT})",
+                  file=sys.stderr)
+            results = run_regex(repo, files, args.pattern)
+        else:
+            print(f"error: --rule needs ast-grep-py or the sg CLI ({INSTALL_HINT})", file=sys.stderr)
+            return 2
+    results.sort()
+    if args.count:
+        counts: dict[str, int] = {}
+        for r in results:
+            counts[r[0]] = counts.get(r[0], 0) + 1
+        if args.json:
+            sys.stdout.write(json.dumps(counts, indent=1) + "\n")
+        else:
+            for rel in sorted(counts):
+                sys.stdout.write(f"{rel}\t{counts[rel]}\n")
+            sys.stdout.write(f"# {len(results)} matches in {len(counts)} files\n")
+        return 0 if results else 1
+    if args.json:
+        data = [{"file": r[0], "line": r[1], "col": r[2], "end_line": r[3], "text": r[4]} for r in results]
+        sys.stdout.write(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    else:
+        for r in results:
+            sys.stdout.write(f"{r[0]}:{r[1]}: {trim(r[4])}\n")
+        sys.stdout.write(f"# {len(results)} matches in {len({r[0] for r in results})} files\n")
+    return 0 if results else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

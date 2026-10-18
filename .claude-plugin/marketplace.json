@@ -1,0 +1,16 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-marketplace.json",
+  "name": "code-map",
+  "description": "Read outlines and exact line ranges instead of whole files.",
+  "owner": {
+    "name": "TikoTikTok"
+  },
+  "plugins": [
+    {
+      "name": "code-map",
+      "description": "Ranked repo map, symbol lookup, ast-grep queries, scoped slices and dependency fan-in for any codebase.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
