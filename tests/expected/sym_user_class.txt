@@ -1,0 +1,25 @@
+# sym User: 2 definitions, 9 references in 4 files
+## definitions
+php/src/User.php:5-19 class User
+  class User
+  doc: A user model.
+web/src/types.ts:2-5 interface User
+  export interface User
+  doc: A user record.
+## references (9 in 4 files)
+php/index.php
+  4 ref  use App\Models\User;
+  11 call $u = new User('x');
+web/src/api.ts
+  1 ref  import type { User, Id } from './types';
+  6 ref  export async function fetchUser(id: Id): Promise<User> {
+  11 ref  export const toName = (u: User) => u.name;
+web/src/index.ts
+  2 ref  import type { User } from './types';
+  5 ref  private users: User[] = [];
+web/src/view.tsx
+  1 ref  import type { User } from './types';
+  4 ref  export function UserCard({ user }: { user: User }) {
+## bodies
+sed -n '5,19p' 'php/src/User.php'
+sed -n '2,5p' 'web/src/types.ts'

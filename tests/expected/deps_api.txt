@@ -1,0 +1,8 @@
+# deps web/src/api.ts (ts, 11 lines): 1 imports, 2 importers, 0 other users
+## imports (1)
+     1  web/src/types.ts  import [User, Id]
+## imported by (2)
+     1  web/src/index.ts  import ./api [fetchUser, toName]
+     2  web/src/view.tsx  import ./api [toName]
+## references symbols defined here without importing (0)
+  (none)

@@ -1,0 +1,30 @@
+# code-map fixture_repo: 9 code files (8 shown), 20 symbols (20 shown); budget 1500 tok, used 226 tok
+web/src/types.ts (ts, 7 lines)
+  2-5 export interface User
+  7-7 export type Id = number
+web/src/api.ts (ts, 11 lines)
+  3-3 export const BASE = 'https://example.test'
+  6-9 export async function fetchUser(id: Id): Promise<User>
+  11-11 export const toName = (u: User)
+app/util.py (py, 20 lines)
+  4-4 CONST = 1
+  7-9 def helper(x)
+  12-20 class Greeter
+    15-16 def __init__(self, name)
+    18-20 def greet(self)
+php/src/User.php (php, 19 lines)
+  2-2 namespace App\Models
+  5-19 class User
+    9-12 public function __construct(string $name)
+    15-18 public function name(): string
+app/main.py (py, 14 lines)
+  7-10 def main()
+php/index.php (php, 13 lines)
+  6-9 function helper(int $x): int
+web/src/index.ts (ts, 17 lines)
+  4-13 export class App
+    8-12 async run(id: number)
+  15-17 export function boot()
+web/src/view.tsx (tsx, 6 lines)
+  4-6 export function UserCard({ user }: { user: User })
+# not shown (1 files, by rank): app/__init__.py

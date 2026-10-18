@@ -1,0 +1,4 @@
+app/main.py:10: helper(1)
+app/util.py:20: helper(CONST)
+php/index.php:13: helper(1)
+# 3 matches in 3 files

@@ -1,0 +1,8 @@
+# deps php/src/User.php (php, 19 lines): 0 imports, 2 importers, 0 other users
+## imports (0)
+  (none)
+## imported by (2)
+     2  php/index.php  require ./src/User.php
+     4  php/index.php  use App\Models\User [User]
+## references symbols defined here without importing (0)
+  (none)

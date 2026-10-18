@@ -1,0 +1,10 @@
+# sym Greeter.greet: 1 definition, 1 reference in 1 file
+## definitions
+app/util.py:18-20 method Greeter.greet
+  def greet(self)
+  doc: Return the greeting.
+## references (1 in 1 files)
+app/main.py
+  9 call print(g.greet())
+## bodies
+sed -n '18,20p' 'app/util.py'

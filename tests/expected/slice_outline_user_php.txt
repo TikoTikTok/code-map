@@ -1,0 +1,5 @@
+== php/src/User.php (php, 19 lines)
+  2-2 namespace App\Models
+  5-19 class User
+    9-12 public function __construct(string $name)
+    15-18 public function name(): string

@@ -1,0 +1,18 @@
+# sym helper: 2 definitions, 4 references in 3 files
+## definitions
+app/util.py:7-9 function helper
+  def helper(x)
+  doc: Add one to x.
+php/index.php:6-9 function helper
+  function helper(int $x): int
+## references (4 in 3 files)
+app/main.py
+  4 ref  from app.util import Greeter, helper
+  10 call return helper(1)
+app/util.py
+  20 call return "hi " + self.name + str(helper(CONST))
+php/index.php
+  13 call echo helper(1);
+## bodies
+sed -n '7,9p' 'app/util.py'
+sed -n '6,9p' 'php/index.php'

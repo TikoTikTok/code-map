@@ -1,0 +1,13 @@
+== app/util.py (py, 20 lines)
+ 4 | CONST = 1
+     ...
+12 > class Greeter:
+18 |     def greet(self):
+19 |         """Return the greeting."""
+20 |         return "hi " + self.name + str(helper(CONST))
+== web/src/index.ts (ts, 17 lines)
+ 4 > export class App {
+ 8 >   async run(id: number) {
+ 9 |     const u = await fetchUser(id);
+10 |     this.users.push(u);
+11 |     return toName(u);
