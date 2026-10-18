@@ -1,5 +1,7 @@
 # code-map
 
+[![tests](https://github.com/TikoTikTok/code-map/actions/workflows/test.yml/badge.svg)](https://github.com/TikoTikTok/code-map/actions/workflows/test.yml)
+
 A Claude Code skill that gives the model a deterministic, token-cheap view of a
 codebase, so it reads outlines and exact line ranges instead of whole files.
 
@@ -236,6 +238,11 @@ The suite runs every script against the fixture repo and compares the exact
 text, runs the map cold, warm and without cache and asserts identical bytes,
 monkeypatches `tree_sitter_language_pack` away to exercise the stdlib
 fallback, and checks each promised language through both engines.
+
+CI (`.github/workflows/test.yml`) runs it on every push and pull request:
+Ubuntu, Windows and macOS on Python 3.12 and 3.14 with the engines installed,
+one job with nothing but pytest installed so the stdlib fallback is tested for
+real, and one job that maps this repository twice and compares the bytes.
 
 ## How the map is ranked
 

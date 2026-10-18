@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  full:
+    name: tree-sitter + ast-grep (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install engines and pytest
+        run: python -m pip install --upgrade pip tree-sitter-language-pack ast-grep-py pytest
+      - name: Show versions
+        run: python -m pip show tree-sitter-language-pack tree-sitter ast-grep-py | grep -E "^(Name|Version)"
+        shell: bash
+      - name: Run tests
+        run: python -m pytest tests -q
+
+  stdlib-only:
+    name: stdlib fallback (no third-party packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install pytest only
+        run: python -m pip install --upgrade pip pytest
+      - name: Prove the engines are absent
+        run: python -c "import importlib.util as u; assert u.find_spec('tree_sitter_language_pack') is None and u.find_spec('ast_grep_py') is None"
+      - name: Run tests on the fallback engines
+        run: python -m pytest tests -q
+
+  self-map:
+    name: scripts on this repo, cold vs warm cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install --upgrade pip tree-sitter-language-pack ast-grep-py
+      - name: map twice and compare bytes
+        run: |
+          S=skills/code-map/scripts
+          python $S/map.py . --budget 800 > map-cold.txt
+          python $S/map.py . --budget 800 > map-warm.txt
+          cmp map-cold.txt map-warm.txt
+          cat map-cold.txt
+      - name: sym, deps, slice, q
+        run: |
+          S=skills/code-map/scripts
+          python $S/sym.py . pagerank
+          python $S/deps.py . skills/code-map/scripts/map.py
+          python $S/slice.py skills/code-map/scripts/codemap_core.py:1-12
+          python $S/q.py . 'subprocess.run($$$ARGS)' --count

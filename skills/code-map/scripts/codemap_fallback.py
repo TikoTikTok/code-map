@@ -64,6 +64,8 @@ def _py_outline(text: str) -> FileInfo:
                     imps.append(Imp(a.name, [], node.lineno))
             elif isinstance(node, ast.ImportFrom):
                 mod = "." * (node.level or 0) + (node.module or "")
+                if mod == "__future__":
+                    continue  # not a dependency; tree-sitter files it under future_import_statement too
                 imps.append(Imp(mod, [a.name for a in node.names], node.lineno, "from"))
 
     for node in tree.body:
@@ -482,12 +484,12 @@ def _rx_outline(text: str, lang: str) -> FileInfo:
                 i = end
             matched = True
             break
-        if not matched or fam == "c":
-            for rx, kind in _RX_IMPORT.get(fam, []):
-                m = rx.search(code if kind not in ("require",) else _blank_strings(raw)) if False else rx.search(raw)
-                if not m:
-                    continue
-                _rx_import(imps, fam, kind, m, i + 1, raw)
+        # imports are scanned on every line: `mod util;` is both a module symbol and an import
+        for rx, kind in _RX_IMPORT.get(fam, []):
+            m = rx.search(raw)
+            if not m:
+                continue
+            _rx_import(imps, fam, kind, m, i + 1, raw)
         i += 1
     refs: dict[str, list[int]] = {}
     for row, raw in enumerate(lines):
@@ -580,7 +582,7 @@ def _rx_import(imps: list[Imp], fam: str, kind: str, m, line: int, raw: str):
         if kind == "import":
             for mod in m.group(1).split(","):
                 imps.append(Imp(mod.strip().split(" as ")[0], [], line))
-        else:
+        elif m.group(1) != "__future__":
             names = [x.strip().split(" as ")[0] for x in m.group(2).split(",") if x.strip()]
             imps.append(Imp(m.group(1), names, line, "from"))
     elif fam == "js":
