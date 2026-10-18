@@ -70,22 +70,18 @@ def _has_error(node) -> bool:
     return any(_has_error(c) for c in node.children())
 
 
-def pattern_config(ag, lang: str, pattern: str, selector: str | None):
-    """A rule config for `pattern` in `lang`.
+def pattern_configs(ag, lang: str, pattern: str, selector: str | None) -> list[dict]:
+    """Candidate rule configs for `pattern` in `lang`, plain first.
 
-    Go, C, C++ and Rust grammars reject a bare expression at top level, so the pattern is wrapped in
-    a function body (with a statement terminator first, which C needs) and the first selector that
-    builds a matcher is used. A pattern that is a whole top-level construct (`func $F($$$) { $$$ }`)
-    fails every selector and falls through to the plain pattern."""
+    Go, C, C++ and Rust grammars reject a bare expression at top level (`helper($A)` parses as a
+    declaration or an error), so a second candidate wraps the pattern in a function body (with a
+    statement terminator first, which C needs) and selects the first node kind that builds a matcher.
+    run_ag runs every candidate and keeps, per language, the one with the most matches, plain on a
+    tie: a whole top-level construct (`func $F($$$) { $$$ }`) matches plainly and never wrapped, an
+    expression matches wrapped and never plainly. --selector KIND forces one wrapped candidate."""
     plain = {"rule": {"pattern": pattern}}
     if lang not in WRAP:
-        return plain
-    if not selector:
-        try:
-            if not _has_error(ag.SgRoot(pattern, lang).root()):
-                return plain  # a whole top-level construct: the grammar accepts it as is
-        except Exception:
-            pass
+        return [plain]
     pre, suf = WRAP[lang]
     bodies = [pattern + ";", pattern] if not pattern.rstrip().endswith((";", "}")) else [pattern]
     for sel in ([selector] if selector else SELECTORS):  # most specific selector first, statement last
@@ -94,16 +90,16 @@ def pattern_config(ag, lang: str, pattern: str, selector: str | None):
             cfg = {"rule": {"pattern": {"context": context, "selector": sel}}}
             try:
                 ag.SgRoot(context, lang).root().find_all(cfg)  # raises when the selector finds no node
-                return cfg
+                return [cfg] if selector else [plain, cfg]
             except Exception:
                 continue
-    return plain
+    return [plain]
 
 
-def run_ag(repo, files, lang_of, cfg_for_lang, count: bool):
+def run_ag(repo, files, lang_of, cfgs_for_lang):
     import ast_grep_py as ag
-    results = []
-    cache: dict[str, dict] = {}
+    cfgs: dict[str, list[dict]] = {}
+    buckets: dict[str, list[list]] = {}  # lang -> one result list per candidate config
     for rel in files:
         lang = lang_of[rel]
         if lang not in AG_LANGS:
@@ -111,18 +107,31 @@ def run_ag(repo, files, lang_of, cfg_for_lang, count: bool):
         text = repo.read_text(rel)
         if text is None:
             continue
-        cfg = cache.get(lang)
-        if cfg is None:
-            cfg = cache[lang] = cfg_for_lang(ag, lang)
-        try:
-            matches = ag.SgRoot(text, lang).root().find_all(cfg)
-        except Exception as e:  # pattern invalid for this grammar
-            print(f"q: skipping {lang} ({str(e).splitlines()[0]})", file=sys.stderr)
-            cache[lang] = {"rule": {"kind": "__never__"}}
+        if lang not in cfgs:
+            cfgs[lang] = cfgs_for_lang(ag, lang)
+            buckets[lang] = [[] for _ in cfgs[lang]]
+        if not cfgs[lang]:
             continue
-        for m in matches:
-            r = m.range()
-            results.append((rel, r.start.line + 1, r.start.column + 1, r.end.line + 1, m.text()))
+        root = ag.SgRoot(text, lang).root()
+        for idx, cfg in enumerate(cfgs[lang]):
+            if cfg is None:
+                continue
+            try:
+                matches = root.find_all(cfg)
+            except Exception as e:  # pattern invalid for this grammar
+                print(f"q: skipping {lang} ({str(e).splitlines()[0]})", file=sys.stderr)
+                cfgs[lang][idx] = None
+                continue
+            for m in matches:
+                r = m.range()
+                buckets[lang][idx].append((rel, r.start.line + 1, r.start.column + 1, r.end.line + 1, m.text()))
+    results = []
+    for lang in sorted(buckets):
+        best = buckets[lang][0] if buckets[lang] else []
+        for b in buckets[lang][1:]:
+            if len(b) > len(best):
+                best = b
+        results.extend(best)
     return results
 
 
@@ -213,10 +222,10 @@ def main(argv=None) -> int:
         have_ag = False
     if have_ag:
         if rule_cfg:
-            results = run_ag(repo, files, repo.langs, lambda _ag, _l: rule_cfg, args.count)
+            results = run_ag(repo, files, repo.langs, lambda _ag, _l: [rule_cfg])
         else:
             results = run_ag(repo, files, repo.langs,
-                             lambda _ag, l: pattern_config(_ag, l, args.pattern, args.selector), args.count)
+                             lambda _ag, l: pattern_configs(_ag, l, args.pattern, args.selector))
     else:
         sg = shutil.which("sg") or shutil.which("ast-grep")
         if sg and (args.rule or args.pattern):
