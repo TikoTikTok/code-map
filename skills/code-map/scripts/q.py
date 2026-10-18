@@ -49,13 +49,104 @@ def trim(text: str, limit: int = 120) -> str:
     return first if len(first) <= limit else first[: limit - 3] + "..."
 
 
+def _yaml_scalar(s: str):
+    s = s.strip()
+    if not s or s in ("~", "null", "Null", "NULL"):
+        return None
+    if s in ("true", "True", "TRUE"):
+        return True
+    if s in ("false", "False", "FALSE"):
+        return False
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        inner = s[1:-1]
+        return inner.replace("\\\\", "\\").replace('\\"', '"') if s[0] == '"' else inner.replace("''", "'")
+    if s[0] in "[{":
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            pass
+    if re.fullmatch(r"-?\d+", s):
+        return int(s)
+    if re.fullmatch(r"-?\d+\.\d+", s):
+        return float(s)
+    return s
+
+
+def parse_simple_yaml(text: str):
+    """The YAML subset ast-grep rule files use: nested mappings, lists of scalars or mappings, scalars,
+    comments. Anchors, multi-line scalars and flow collections spanning lines are not supported; install
+    PyYAML for those."""
+    lines = []
+    for raw in text.split("\n"):
+        stripped = raw.split("#", 1)[0] if not re.search(r"[\"'].*#", raw) else raw
+        if stripped.strip() == "" or stripped.lstrip().startswith("#"):
+            continue
+        if stripped.strip() == "---":
+            continue
+        lines.append((len(stripped) - len(stripped.lstrip(" ")), stripped.strip()))
+
+    def block(i: int, indent: int):
+        """Parse the block whose first line is at index i with the given indent; return (value, next_i)."""
+        if i >= len(lines):
+            return None, i
+        if lines[i][1].startswith("- "):
+            return seq(i, indent)
+        return mapping(i, indent)
+
+    def mapping(i: int, indent: int):
+        out: dict = {}
+        while i < len(lines) and lines[i][0] == indent and not lines[i][1].startswith("- "):
+            ln = lines[i][1]
+            m = re.match(r"^([^:\s][^:]*?)\s*:(?:\s+(.*))?$", ln)
+            if not m:
+                raise ValueError(f"cannot parse line: {ln}")
+            key, val = m.group(1).strip().strip("\"'"), m.group(2)
+            if val is not None and val != "":
+                out[key] = _yaml_scalar(val)
+                i += 1
+            else:
+                i += 1
+                if i < len(lines) and lines[i][0] > indent:
+                    out[key], i = block(i, lines[i][0])
+                elif i < len(lines) and lines[i][0] == indent and lines[i][1].startswith("- "):
+                    out[key], i = seq(i, indent)
+                else:
+                    out[key] = None
+        return out, i
+
+    def seq(i: int, indent: int):
+        out: list = []
+        while i < len(lines) and lines[i][0] == indent and lines[i][1].startswith("- "):
+            item = lines[i][1][2:].strip()
+            if re.match(r"^[^:\s][^:]*?\s*:(\s+.*)?$", item) and not item.startswith(("\"", "'", "[", "{")):
+                # a mapping that starts on the dash line: re-read it as an indented mapping
+                lines[i] = (indent + 2, item)
+                val, i = mapping(i, indent + 2)
+                out.append(val)
+            else:
+                out.append(_yaml_scalar(item))
+                i += 1
+        return out, i
+
+    value, i = block(0, lines[0][0] if lines else 0)
+    if i < len(lines):
+        raise ValueError(f"cannot parse line: {lines[i][1]}")
+    return value
+
+
 def load_rule(path: str) -> dict:
     raw = Path(path).read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore
         doc = yaml.safe_load(raw)
     except ImportError:
-        doc = json.loads(raw)
+        if raw.lstrip().startswith("{"):
+            doc = json.loads(raw)
+        else:
+            try:
+                doc = parse_simple_yaml(raw)
+            except ValueError as e:
+                raise SystemExit(f"error: {e} (install PyYAML for full YAML support)")
     if not isinstance(doc, dict):
         raise SystemExit("error: rule file must be a mapping with a `rule` key")
     cfg = {k: v for k, v in doc.items() if k in ("rule", "constraints", "utils", "transform")}

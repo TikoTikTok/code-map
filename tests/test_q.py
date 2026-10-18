@@ -44,12 +44,46 @@ def test_q_wraps_go_c_cpp_rust_expressions():
     assert whole.stdout == "svc/main.go\t1\n# 1 matches in 1 files\n"  # only main(): no receiver, no return type
 
 
+RULE_YAML = """# calls of helper inside a function, as an ast-grep rule file
+id: calls-helper
+language: python
+message: "helper called"
+rule:
+  any:
+    - pattern: helper($A)
+    - pattern: helper($A, $B)
+  inside:
+    kind: function_definition
+    stopBy: end
+"""
+
+
 @pytest.mark.skipif(not HAVE_AG, reason="ast-grep-py not installed")
 def test_q_rule_file(tmp_path):
     rule = tmp_path / "rule.yml"
-    rule.write_text("id: calls-helper\nlanguage: python\nrule:\n  pattern: helper($A)\n", encoding="utf-8")
+    rule.write_text(RULE_YAML, encoding="utf-8")
     r = run("q.py", *fixture_args("--rule", str(rule)))
-    assert r.stdout == "app/main.py:10: helper(1)\napp/util.py:20: helper(CONST)\n# 2 matches in 2 files\n"
+    assert r.stdout == "app/main.py:10: helper(1)\napp/util.py:20: helper(CONST)\n# 2 matches in 2 files\n", r.stderr
+
+
+def test_simple_yaml_parser_matches_pyyaml():
+    """The built-in parser (used when PyYAML is absent) must read a typical rule file like PyYAML does."""
+    spec = importlib.util.spec_from_file_location("codemap_q_yaml_test", SCRIPTS / "q.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    want = {"id": "calls-helper", "language": "python", "message": "helper called",
+            "rule": {"any": [{"pattern": "helper($A)"}, {"pattern": "helper($A, $B)"}],
+                     "inside": {"kind": "function_definition", "stopBy": "end"}}}
+    assert mod.parse_simple_yaml(RULE_YAML) == want
+    try:
+        import yaml  # type: ignore
+        assert yaml.safe_load(RULE_YAML) == want
+    except ImportError:
+        pass
+    more = "rule:\n  kind: call\n  has:\n    field: function\n    regex: '^h'\nconstraints:\n  A:\n    regex: ^\\d+$\nutils:\n  n: 1\n  flag: true\n  none: ~\n  list:\n    - a\n    - 2\n"
+    assert mod.parse_simple_yaml(more) == {"rule": {"kind": "call", "has": {"field": "function", "regex": "^h"}},
+                                           "constraints": {"A": {"regex": "^\\d+$"}},
+                                           "utils": {"n": 1, "flag": True, "none": None, "list": ["a", 2]}}
 
 
 def test_q_degrades_to_regex_without_ast_grep(monkeypatch, capsys):
